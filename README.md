@@ -1,17 +1,27 @@
 # Hello World 3D
 
-An immersive "Hello, World" for Android, rendered in real time by **Google Filament** through the
-**SceneView** Compose DSL. The words *HELLO* and *WORLD* are not textures or billboards: at launch
-the app pulls the system font's glyph outlines, extrudes them into watertight 3D meshes and shades
-them as physically based metal, lit by an HDR environment with bloom.
+An animated developer profile for Android, rendered in real time by **Google Filament** through the
+**SceneView** Compose DSL. Nothing on screen is a texture or a billboard: the app pulls glyph outlines
+from the system font, extrudes them into watertight 3D meshes and shades them as physically based
+metal, lit by an HDR environment with bloom. The scene types out
+
+> Hello World, my name is **{name}**. I program in **{languages}**. Based in **{location}**.
+
+with a typewriter cursor and matrix-style glyph scrambles, over a themed matrix-rain backdrop.
 
 ## What you see
 
-- Two lines of extruded type. *HELLO* in chrome, *WORLD* in a live accent colour.
-- A slow, breathing idle animation on the hero rig and an emissive halo ring with a bright bead.
-- A swarm of glowing sparks on tilted orbits that catch the bloom pass.
-- A soft contact shadow grounding the type over a layered Compose backdrop.
-- A glass control panel: pick the accent colour and switch Filament's render quality preset.
+- *HELLO WORLD* in extruded themed metal, then three lines of 3D glyph text that type in letter by
+  letter. The personal parts (name, language, location) render in the accent metal.
+- Languages cycle with a matrix scramble: each glyph flickers through the theme's alphabet and
+  settles left to right.
+- A breathing idle sway on the whole typographic block, an emissive halo ring, orbiting sparks and a
+  contact shadow.
+- Matrix rain behind the viewport, drawn with the theme's alphabet (katakana, binary, hex, markup, JSON).
+- Five theme packs from security and web development: **Terminal**, **Red Team**, **Blue Team**,
+  **Frontend Neon**, **Backend Emerald**. Each sets colours, backdrop, metal finish, typeface and rain glyphs.
+- A Settings page for name, location, languages (curated chips plus custom entries), theme, Filament
+  render quality and rain density. Everything persists with Preferences DataStore.
 - Gestures: drag to orbit, pinch to zoom, tap to pulse the type (with haptics).
 
 ## Stack
@@ -29,13 +39,26 @@ them as physically based metal, lit by an HDR environment with bloom.
 
 ```
 app/src/main/kotlin/dev/grenas/hello3d/
-├── MainActivity.kt                 Edge-to-edge activity hosting the Compose screen
+├── MainActivity.kt                 Edge-to-edge activity hosting the navigation root
+├── data/
+│   ├── Profile.kt                  Profile model, RenderPreset and RainIntensity enums
+│   ├── Languages.kt                Curated language list and normalisation
+│   ├── ProfileRepository.kt        Preferences DataStore persistence
+│   └── ProfileViewModel.kt         StateFlow<Profile?> plus intent-named edits
 ├── scene/
-│   ├── ExtrudedText.kt             Glyph outline → extruded mesh (caps, holes, walls)
-│   └── HelloWorldScene.kt          Filament scene: materials, lights, camera, nodes, animation
+│   ├── ExtrudedText.kt             Glyph outline → extruded mesh (caps, holes, walls, advances)
+│   ├── GlyphAtlas.kt               Per-character mesh cache for 3D text layout
+│   ├── TextLine3D.kt               One 3D text line: glyph nodes, pop-in, in-place scramble, cursor
+│   ├── SentenceScript.kt           Pure-Kotlin choreography: typewriter, scramble, language loop
+│   └── ProfileScene.kt             Filament scene: themed materials, lights, camera, nodes, animation
 └── ui/
-    ├── HelloWorldScreen.kt         Backdrop, header, glass controls, warm-up veil
-    └── theme/Theme.kt              Palette and typography
+    ├── Navigation.kt               NavHost (profile ⇄ settings), engine and view model owners
+    ├── ProfileScreen.kt            Backdrop, matrix rain, header, theme panel, warm-up veil
+    ├── SettingsScreen.kt           Identity, languages, theme cards, render options
+    ├── MatrixRain.kt               Canvas glyph rain driven by the theme alphabet
+    ├── components/Glass.kt         Shared frosted panels and pills
+    └── theme/                      ThemePacks.kt (five packs) and Theme.kt (Material 3 mapping)
+app/src/test/kotlin/.../scene/SentenceScriptTest.kt   Unit tests for the choreography
 ```
 
 ### How the 3D text is built
@@ -44,7 +67,19 @@ app/src/main/kotlin/dev/grenas/hello3d/
 (lines stay exact, curves are flattened adaptively), classifies contours into outer rings and holes
 by containment depth, triangulates the caps with SceneView's ear-clipping triangulator and stitches
 hard-edged side walls. The result is uploaded once as a Filament `VertexBuffer`/`IndexBuffer`
-through SceneView's `Geometry.Builder` and rendered with a `GeometryNode`.
+through SceneView's `Geometry.Builder` and rendered with a `GeometryNode`. The hero words are one
+mesh each. The sentence lines use `GlyphAtlas`, which caches one baseline-anchored mesh per
+character and lays glyphs out by pen advance. Every visible glyph is its own `GeometryNode`; a
+scramble swaps the node's mesh in place, so the typewriter and matrix effects never rebuild the
+scene graph.
+
+### How the sentence is choreographed
+
+`SentenceScript` is plain Kotlin: it turns a `Profile` into an intro (type the name line, type the
+languages label, scramble in the first language, type the location) and a loop (scramble to each
+next language, hold, repeat). `play` writes `LineState`s into a sink with injectable delays, which
+is what the unit tests exercise. In the app the sink is a Compose-backed `LineBoard`, and
+`TextLine3D` recomposes the glyph nodes from it.
 
 ## Build and run
 
@@ -84,3 +119,6 @@ export JAVA_HOME=~/jdk ANDROID_HOME=~/android-sdk
 - AGP 9 compiles Kotlin itself (built-in Kotlin). The Kotlin Gradle plugin is pinned to 2.4.21 on
   the build classpath so the compiler matches the Compose compiler plugin and can read SceneView's
   Kotlin 2.4 metadata.
+- SceneView's classes target Java 21, so local unit tests (which run on the build JDK 17) must not
+  load them. The data layer therefore uses its own `RenderPreset` enum, mapped to Filament's
+  `RenderQuality` in the UI. Run the tests with `./gradlew testDebugUnitTest`.

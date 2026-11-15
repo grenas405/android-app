@@ -1,5 +1,22 @@
 # Changes
 
+## 1.1.0 — 2026-11-14
+
+Developer profile.
+
+- Settings screen (name, location, languages with curated chips plus custom entries, theme, Filament
+  render quality, matrix-rain density) persisted with Preferences DataStore; Navigation Compose
+  between profile and settings with a single shared Filament engine.
+- The scene now types "Hello World, my name is …", "I program in …" and "based in …" as 3D extruded
+  glyphs: per-character glyph atlas, pop-in typewriter with a blinking cursor, and matrix-style
+  scrambles that cycle through the chosen languages.
+- Five theme packs replace the generic accent colours: Terminal, Red Team, Blue Team, Frontend Neon
+  and Backend Emerald. Each drives colours, backdrop, metal finish, typeface and the glyph alphabet.
+- Matrix-rain backdrop drawn on a Compose Canvas with the theme alphabet; Off / Subtle / Full.
+- Unit tests for the sentence choreography (`SentenceScriptTest`).
+- Build: added DataStore 1.3.0, Navigation Compose 2.10.2, lifecycle-viewmodel-compose, Material
+  icons core, JUnit 4.
+
 ## 1.0.0 — 2026-11-14
 
 Initial release.

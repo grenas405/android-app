@@ -39,19 +39,40 @@ object ExtrudedText {
         val depth: Float = 0.26f,
         /** Extra tracking between glyphs, in em units. */
         val letterSpacing: Float = 0.08f,
-        /** Flattening step along curves, in font units (the text is rasterised at 100 units). */
+        /** Flattening step along curves, in font units (the text is rasterised at [EM] units). */
         val curveStep: Float = 1.25f,
+        /** Where the mesh origin sits: centred on the glyph bounds, or at the pen origin/baseline. */
+        val anchor: Anchor = Anchor.Center,
     )
+
+    enum class Anchor {
+        /** Origin at the centre of the ink bounds; good for a single hero word. */
+        Center,
+        /** Origin at the pen start on the baseline; glyphs can then be laid out by [Mesh.advance]. */
+        Baseline,
+    }
 
     class Mesh(
         val vertices: List<Geometry.Vertex>,
         val indices: List<Int>,
-        /** Width / height of the glyph run in font units, after centring. */
+        /** Ink width / height of the glyph run in font units. */
         val width: Float,
         val height: Float,
+        /** Pen advance of the run in font units (includes letter spacing), for laying out runs. */
+        val advance: Float,
     )
 
-    private const val FONT_SIZE = 100f
+    /** Font size the outlines are generated at; mesh coordinates are in these font units. */
+    const val EM = 100f
+
+    /** Pen advance of [text] in font units, measured with the same paint [build] uses. */
+    fun advance(spec: Spec, text: String): Float = paintFor(spec).measureText(text)
+
+    private fun paintFor(spec: Spec) = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        typeface = spec.typeface
+        textSize = EM
+        letterSpacing = spec.letterSpacing
+    }
 
     fun buildGeometry(engine: Engine, spec: Spec): Pair<Geometry, Mesh> {
         val mesh = build(spec)
@@ -63,16 +84,13 @@ object ExtrudedText {
     }
 
     fun build(spec: Spec): Mesh {
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            typeface = spec.typeface
-            textSize = FONT_SIZE
-            letterSpacing = spec.letterSpacing
-        }
+        val paint = paintFor(spec)
         val path = Path()
         paint.getTextPath(spec.text, 0, spec.text.length, 0f, 0f, path)
         val bounds = RectF().also { path.computeBounds(it, true) }
-        val cx = bounds.centerX()
-        val cy = bounds.centerY()
+        val advance = paint.measureText(spec.text)
+        val cx = if (spec.anchor == Anchor.Center) bounds.centerX() else 0f
+        val cy = if (spec.anchor == Anchor.Center) bounds.centerY() else 0f
 
         // Font space is y-down; the scene is y-up. Centre the run on the origin while flipping.
         val contours = flatten(path, spec.curveStep)
@@ -83,7 +101,7 @@ object ExtrudedText {
         val vertices = ArrayList<Geometry.Vertex>()
         val indices = ArrayList<Int>()
         // Mesh units are font units (1 em = FONT_SIZE); the node is scaled to world size later.
-        val halfDepth = spec.depth * FONT_SIZE / 2f
+        val halfDepth = spec.depth * EM / 2f
 
         for ((outer, holes) in classify(contours)) {
             emitCaps(outer, holes, halfDepth, vertices, indices)
@@ -91,7 +109,7 @@ object ExtrudedText {
             holes.forEach { emitWalls(it, halfDepth, vertices, indices) }
         }
 
-        return Mesh(vertices, indices, bounds.width(), bounds.height())
+        return Mesh(vertices, indices, bounds.width(), bounds.height(), advance)
     }
 
     // ── Outline flattening ────────────────────────────────────────────────────────────────────────
