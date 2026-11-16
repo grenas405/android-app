@@ -47,12 +47,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.Role
@@ -109,8 +111,9 @@ fun ProfileScreen(
             pack = pack,
             profile = profile,
             quality = profile.quality.toRenderQuality(),
-            pulse = pulse.value,
-            onFirstFrame = { ready = true },
+            // Read by the render loop, not here: a tap must not recompose the screen every frame.
+            pulse = { pulse.value },
+            onReady = { ready = true },
             onTap = onTap,
             modifier = Modifier.fillMaxSize().semantics { contentDescription = sentence },
         )
@@ -148,30 +151,36 @@ private fun Backdrop(pack: ThemePack) {
 @Composable
 private fun AccentGlow(accent: Color) {
     val glow = rememberInfiniteTransition(label = "glow")
-    val breathe by glow.animateFloat(
+    val breathe = glow.animateFloat(
         initialValue = 0.82f, targetValue = 1.08f,
         animationSpec = infiniteRepeatable(tween(5200, easing = FastOutSlowInEasing), RepeatMode.Reverse),
         label = "breathe",
     )
+    // The gradients are built once per size and colour. Breathing only scales the cached circle, so
+    // the animation costs a transform per frame instead of a new gradient shader per frame. The glow
+    // has its own layer so that this per-frame redraw does not re-record the rest of the backdrop.
     Box(
-        modifier = Modifier.fillMaxSize().drawBehind {
+        modifier = Modifier.fillMaxSize().graphicsLayer().drawWithCache {
             val center = Offset(size.width * 0.5f, size.height * 0.46f)
-            val radius = size.minDimension * 0.78f * breathe
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(accent.copy(alpha = 0.26f), accent.copy(alpha = 0.05f), Color.Transparent),
-                    center = center, radius = radius,
-                ),
-                radius = radius, center = center,
+            val radius = size.minDimension * 0.78f
+            val halo = Brush.radialGradient(
+                colors = listOf(accent.copy(alpha = 0.26f), accent.copy(alpha = 0.05f), Color.Transparent),
+                center = center, radius = radius,
             )
-            drawRect(
-                brush = Brush.verticalGradient(
-                    colors = listOf(Color.Transparent, accent.copy(alpha = 0.05f), Color.Transparent),
-                    startY = size.height * 0.64f, endY = size.height * 0.88f,
-                ),
-                topLeft = Offset(0f, size.height * 0.64f),
-                size = Size(size.width, size.height * 0.24f),
+            val band = Brush.verticalGradient(
+                colors = listOf(Color.Transparent, accent.copy(alpha = 0.05f), Color.Transparent),
+                startY = size.height * 0.64f, endY = size.height * 0.88f,
             )
+            onDrawBehind {
+                scale(breathe.value, pivot = center) {
+                    drawCircle(brush = halo, radius = radius, center = center)
+                }
+                drawRect(
+                    brush = band,
+                    topLeft = Offset(0f, size.height * 0.64f),
+                    size = Size(size.width, size.height * 0.24f),
+                )
+            }
         }
     )
 }
@@ -179,14 +188,13 @@ private fun AccentGlow(accent: Color) {
 @Composable
 private fun Vignette(ink: Color) {
     Box(
-        modifier = Modifier.fillMaxSize().drawBehind {
-            drawRect(
-                Brush.radialGradient(
-                    colors = listOf(Color.Transparent, Color.Transparent, ink.copy(alpha = 0.6f)),
-                    center = Offset(size.width / 2f, size.height / 2f),
-                    radius = size.maxDimension * 0.72f,
-                )
+        modifier = Modifier.fillMaxSize().drawWithCache {
+            val shade = Brush.radialGradient(
+                colors = listOf(Color.Transparent, Color.Transparent, ink.copy(alpha = 0.6f)),
+                center = Offset(size.width / 2f, size.height / 2f),
+                radius = size.maxDimension * 0.72f,
             )
+            onDrawBehind { drawRect(shade) }
         }
     )
 }
@@ -294,7 +302,7 @@ private fun ThemeDot(pack: ThemePack, selected: Boolean, onClick: () -> Unit) {
 fun WarmUpVeil(visible: Boolean, pack: ThemePack) {
     AnimatedVisibility(visible = visible, exit = fadeOut(tween(650))) {
         val transition = rememberInfiniteTransition(label = "warmup")
-        val angle by transition.animateFloat(
+        val angle = transition.animateFloat(
             initialValue = 0f, targetValue = 360f,
             animationSpec = infiniteRepeatable(tween(1400, easing = LinearEasing)),
             label = "spin",
@@ -307,7 +315,8 @@ fun WarmUpVeil(visible: Boolean, pack: ThemePack) {
                 Box(
                     modifier = Modifier
                         .size(44.dp)
-                        .rotate(angle)
+                        // Layer property, so the spinner turns without recomposing.
+                        .graphicsLayer { rotationZ = angle.value }
                         .drawBehind {
                             drawArc(
                                 brush = Brush.sweepGradient(listOf(Color.Transparent, pack.accent)),

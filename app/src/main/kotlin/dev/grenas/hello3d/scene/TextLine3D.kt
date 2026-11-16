@@ -8,13 +8,15 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.snapshots.SnapshotStateList
+import com.google.android.filament.Engine
 import com.google.android.filament.MaterialInstance
 import io.github.sceneview.SceneScope
 import io.github.sceneview.geometries.Geometry
+import io.github.sceneview.geometries.geometry
 import io.github.sceneview.math.Position
 import io.github.sceneview.math.Scale
 import io.github.sceneview.math.Size
-import io.github.sceneview.node.GeometryNode
+import io.github.sceneview.node.RenderableNode
 
 /** Compose-observable storage for the sentence lines; [SentenceScript.play] writes into it. */
 class LineBoard(lineCount: Int) : LineSink {
@@ -26,18 +28,20 @@ class LineBoard(lineCount: Int) : LineSink {
 
 /**
  * One line of 3D text laid out from [GlyphAtlas] advances and centred on its own width. Each visible
- * cell is a [GlyphNode]; a blinking cursor block follows the last visible glyph while typing.
+ * cell is a [GlyphNode] drawing a geometry shared through [glyphs]; a blinking cursor block follows
+ * the last visible glyph while typing.
  */
 @Composable
 fun SceneScope.TextLine3D(
     state: LineState,
-    atlas: GlyphAtlas,
+    glyphs: GlyphGeometries,
     plainMaterial: MaterialInstance,
     emphasisMaterial: MaterialInstance,
     cursorMaterial: MaterialInstance,
     unitScale: Float,
     position: Position,
 ) {
+    val atlas = glyphs.atlas
     val advances = state.cells.map { atlas.advance(it.char) }
     val total = advances.sum()
     val start = -total / 2f
@@ -51,7 +55,7 @@ fun SceneScope.TextLine3D(
                 val shown = cell.scramble ?: cell.char
                 if (cell.visible && atlas.hasGeometry(shown)) {
                     GlyphNode(
-                        atlas = atlas,
+                        glyphs = glyphs,
                         char = shown,
                         material = if (cell.emphasis) emphasisMaterial else plainMaterial,
                         position = Position(x = x),
@@ -76,21 +80,19 @@ fun SceneScope.TextLine3D(
 
 private const val POP_SECONDS = 0.28f
 
-/** A single extruded glyph. Pops in on first appearance; swaps its mesh in place when [char] changes. */
+/**
+ * A single extruded glyph. Pops in on first appearance. When [char] changes (a scramble tick) the
+ * node is re-pointed at the other character's shared geometry, so nothing is uploaded to the GPU.
+ */
 @Composable
 private fun SceneScope.GlyphNode(
-    atlas: GlyphAtlas,
+    glyphs: GlyphGeometries,
     char: Char,
     material: MaterialInstance,
     position: Position,
 ) {
-    val node = remember(engine) {
-        val mesh = atlas.mesh(char)
-        val geometry = Geometry.Builder()
-            .vertices(mesh.vertices)
-            .indices(mesh.indices)
-            .build(engine)
-        GeometryNode(engine = engine, geometry = geometry, materialInstance = material).apply {
+    val node = remember(engine, glyphs) {
+        GlyphRenderable(engine, glyphs.require(char), material).apply {
             scale = Scale(0.001f)
             val clock = FrameClock()
             onFrame = { nanos ->
@@ -104,15 +106,14 @@ private fun SceneScope.GlyphNode(
             }
         }
     }
-    val shownChar = remember { mutableStateOf(char) }
+    val shownChar = remember(node) { mutableStateOf(char) }
     SideEffect {
         if (shownChar.value != char) {
-            val mesh = atlas.mesh(char)
-            if (mesh.vertices.isNotEmpty()) node.updateGeometry(mesh.vertices, listOf(mesh.indices))
+            glyphs[char]?.let(node::setGeometry)
             shownChar.value = char
         }
     }
-    val shownMaterial = remember { mutableStateOf(material) }
+    val shownMaterial = remember(node) { mutableStateOf(material) }
     SideEffect {
         if (shownMaterial.value != material) {
             node.setMaterialInstanceAt(0, material)
@@ -123,8 +124,30 @@ private fun SceneScope.GlyphNode(
     NodeLifecycle(node, content = null)
 }
 
+/**
+ * A one-primitive renderable whose geometry object can be replaced at runtime. SceneView's
+ * `GeometryNode` owns a fixed geometry and can only re-upload its vertices; binding through
+ * [RenderableNode.setGeometry] instead lets many glyph nodes share one vertex buffer per character.
+ */
+private class GlyphRenderable(
+    engine: Engine,
+    geometry: Geometry,
+    material: MaterialInstance,
+) : RenderableNode(
+    engine = engine,
+    primitiveCount = 1,
+    boundingBox = geometry.boundingBox,
+    materialInstances = listOf(material),
+    builder = { geometry(geometry) },
+) {
+    init {
+        // Registers this node as a user of the geometry so its buffers outlive every node drawing them.
+        setGeometry(geometry)
+    }
+}
+
 /** Overshooting ease: 0 → ~1.1 → 1. */
-private fun easeOutBack(p: Float): Float {
+internal fun easeOutBack(p: Float): Float {
     val c1 = 1.70158f
     val c3 = c1 + 1f
     val q = p - 1f

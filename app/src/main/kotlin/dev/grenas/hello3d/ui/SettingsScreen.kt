@@ -33,6 +33,7 @@ import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.InputChip
+import androidx.compose.material3.InputChipDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -59,11 +60,13 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
+import dev.grenas.hello3d.data.LanguageLogos
 import dev.grenas.hello3d.data.Languages
 import dev.grenas.hello3d.data.Profile
 import dev.grenas.hello3d.data.RainIntensity
 import dev.grenas.hello3d.data.RenderPreset
 import dev.grenas.hello3d.ui.components.Glass
+import dev.grenas.hello3d.ui.components.LanguageLogo
 import dev.grenas.hello3d.ui.components.SectionLabel
 import dev.grenas.hello3d.ui.theme.ThemePack
 import dev.grenas.hello3d.ui.theme.ThemePacks
@@ -202,6 +205,9 @@ private fun LanguagesSection(
                         selected = true,
                         onClick = { onLanguagesChange(profile.languages - language) },
                         label = { Text(language) },
+                        avatar = LanguageLogos.forLanguage(language)?.let { logo ->
+                            { LanguageLogo(logo, size = InputChipDefaults.AvatarSize) }
+                        },
                         trailingIcon = { Icon(Icons.Filled.Close, contentDescription = "Remove $language", modifier = Modifier.size(16.dp)) },
                     )
                 }
@@ -230,14 +236,23 @@ private fun LanguagesSection(
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Languages.curated.forEach { language ->
                 val selected = language in profile.languages
+                val logo = LanguageLogos.forLanguage(language)
                 FilterChip(
                     selected = selected,
                     enabled = selected || !full,
                     onClick = { onToggleLanguage(language) },
                     label = { Text(language) },
-                    leadingIcon = if (selected) {
-                        { Icon(Icons.Filled.Check, contentDescription = null, modifier = Modifier.size(16.dp)) }
-                    } else null,
+                    // The logo identifies the language; the tinted container and border mark selection.
+                    // Languages without an official logo (SQL, Assembly) keep the check mark.
+                    leadingIcon = when {
+                        logo != null -> {
+                            { LanguageLogo(logo, size = FilterChipDefaults.IconSize) }
+                        }
+                        selected -> {
+                            { Icon(Icons.Filled.Check, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                        }
+                        else -> null
+                    },
                     colors = FilterChipDefaults.filterChipColors(
                         selectedContainerColor = pack.accent.copy(alpha = 0.22f),
                         selectedLabelColor = pack.textPrimary,

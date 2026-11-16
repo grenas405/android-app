@@ -1,6 +1,6 @@
 package dev.grenas.hello3d.scene
 
-import android.graphics.Typeface
+import android.graphics.Bitmap
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
@@ -10,11 +10,15 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.platform.LocalContext
 import com.google.android.filament.Engine
 import com.google.android.filament.MaterialInstance
 import dev.grenas.hello3d.data.Profile
@@ -49,6 +53,9 @@ import io.github.sceneview.rememberMaterialLoader
 import io.github.sceneview.rememberModelLoader
 import io.github.sceneview.rememberOnGestureListener
 import io.github.sceneview.rememberView
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sin
@@ -61,11 +68,22 @@ private const val LINE_CAP_HEIGHT = 0.19f
 private const val HERO_Y = 1.05f
 private val LINE_BASELINES = floatArrayOf(0.12f, -0.33f, -0.78f)
 
+/** The language logo trails the language name: its edge length and the gap before it, in world units. */
+private const val BADGE_SIZE = 0.3f
+private const val BADGE_GAP = 0.09f
+
+private const val THEME_FADE_MILLIS = 650
+private val LABEL_FINISH = MaterialFinish(0.6f, 0.5f, 0.5f)
+
 /**
  * The developer-profile hero: extruded "HELLO WORLD" in themed metal, three lines of 3D glyph text
- * typed and scrambled by [SentenceScript], an emissive halo ring, orbiting sparks and a contact
- * shadow. Rendered by Google Filament through SceneView's Compose DSL on a transparent surface so
- * the Compose backdrop (gradient, matrix rain, glow) shows through.
+ * typed and scrambled by [SentenceScript], the official logo of the language on screen, an emissive
+ * halo ring, orbiting sparks and a contact shadow. Rendered by Google Filament through SceneView's
+ * Compose DSL on a transparent surface so the Compose backdrop (gradient, matrix rain, glow) shows
+ * through.
+ *
+ * [pulse] is read from the render loop rather than passed as a value, so the tap animation never
+ * recomposes the scene. [onReady] fires once the first frame that includes the hero words is up.
  */
 @Composable
 fun ProfileScene(
@@ -73,8 +91,8 @@ fun ProfileScene(
     pack: ThemePack,
     profile: Profile,
     quality: RenderQuality,
-    pulse: Float,
-    onFirstFrame: () -> Unit,
+    pulse: () -> Float,
+    onReady: () -> Unit,
     onTap: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -95,52 +113,68 @@ fun ProfileScene(
     }
     val fillLight = rememberFillLightNode(engine)
 
-    // Theme colours ease between packs; materials are updated in place.
-    val accent by animateColorAsState(pack.accent, tween(650), label = "accent")
-    val accentAlt by animateColorAsState(pack.accentAlt, tween(650), label = "accentAlt")
-    val heroColor by animateColorAsState(pack.heroColor, tween(650), label = "hero")
-    val labelColor = lerp(heroColor, pack.backdrop.first(), 0.5f)
+    // Theme colours ease between packs. The animated values are only ever read inside snapshotFlow,
+    // so a fade updates the Filament materials in place without recomposing the scene every frame.
+    val accent = animateColorAsState(pack.accent, tween(THEME_FADE_MILLIS), label = "accent")
+    val accentAlt = animateColorAsState(pack.accentAlt, tween(THEME_FADE_MILLIS), label = "accentAlt")
+    val heroColor = animateColorAsState(pack.heroColor, tween(THEME_FADE_MILLIS), label = "hero")
+    val labelInk = pack.backdrop.first()
 
-    val chrome = remember(materialLoader) { materialLoader.createColorInstance(color = heroColor) }
-    val accentMetal = remember(materialLoader) { materialLoader.createColorInstance(color = accent) }
-    val label = remember(materialLoader) { materialLoader.createColorInstance(color = labelColor) }
-    val halo = remember(materialLoader) { materialLoader.createColorInstance(color = accent, metallic = 0.3f, roughness = 0.55f) }
+    val chrome = remember(materialLoader) { materialLoader.createColorInstance(color = pack.heroColor) }
+    val accentMetal = remember(materialLoader) { materialLoader.createColorInstance(color = pack.accent) }
+    val label = remember(materialLoader) { materialLoader.createColorInstance(color = lerp(pack.heroColor, labelInk, 0.5f)) }
+    val halo = remember(materialLoader) { materialLoader.createColorInstance(color = pack.accent, metallic = 0.3f, roughness = 0.55f) }
     val spark = remember(materialLoader) { materialLoader.createColorInstance(color = Color.White, metallic = 0f, roughness = 1f) }
-    val cursor = remember(materialLoader) { materialLoader.createColorInstance(color = accentAlt, metallic = 0f, roughness = 1f) }
-    LaunchedEffect(heroColor, labelColor, pack.heroFinish) {
-        chrome.setColor(colorOf(heroColor)); chrome.applyFinish(pack.heroFinish)
-        label.setColor(colorOf(labelColor)); label.applyFinish(MaterialFinish(0.6f, 0.5f, 0.5f))
-    }
-    LaunchedEffect(accent, accentAlt, pack.nameFinish) {
-        accentMetal.setColor(colorOf(accent)); accentMetal.applyFinish(pack.nameFinish)
-        halo.setColor(colorOf(accent)); halo.setEmissive(accent, intensity = 3f)
-        spark.setEmissive(lerp(accent, Color.White, 0.45f), intensity = 7f)
-        cursor.setColor(colorOf(accentAlt)); cursor.setEmissive(accentAlt, intensity = 5f)
-    }
-
-    // Type: the hero words are one mesh each; the sentence uses a per-character atlas.
-    val typeface = remember(pack.typeface) {
-        when (pack.typeface) {
-            GlyphTypeface.Mono -> Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
-            GlyphTypeface.Sans -> Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+    val cursor = remember(materialLoader) { materialLoader.createColorInstance(color = pack.accentAlt, metallic = 0f, roughness = 1f) }
+    LaunchedEffect(chrome, label, pack.heroFinish, labelInk) {
+        chrome.applyFinish(pack.heroFinish)
+        label.applyFinish(LABEL_FINISH)
+        snapshotFlow { heroColor.value }.collect { hero ->
+            chrome.setColor(colorOf(hero))
+            label.setColor(colorOf(lerp(hero, labelInk, 0.5f)))
         }
     }
-    val hello = remember(engine, typeface) { ExtrudedText.buildGeometry(engine, ExtrudedText.Spec("HELLO", typeface)) }
-    val world = remember(engine, typeface) { ExtrudedText.buildGeometry(engine, ExtrudedText.Spec("WORLD", typeface)) }
-    val atlas = remember(typeface) { GlyphAtlas(typeface) }
+    LaunchedEffect(accentMetal, halo, spark, cursor, pack.nameFinish) {
+        accentMetal.applyFinish(pack.nameFinish)
+        snapshotFlow { accent.value to accentAlt.value }.collect { (main, alt) ->
+            accentMetal.setColor(colorOf(main))
+            halo.setColor(colorOf(main)); halo.setEmissive(main, intensity = 3f)
+            spark.setEmissive(lerp(main, Color.White, 0.45f), intensity = 7f)
+            cursor.setColor(colorOf(alt)); cursor.setEmissive(alt, intensity = 5f)
+        }
+    }
+
+    // Type: the hero words are one mesh each; the sentence uses a per-character atlas. Both are
+    // tessellated off the main thread and cached for the life of the process. While a new typeface
+    // is being built the previous hero words stay on screen.
+    val heroMeshes by produceState(HeroMeshes.cached(pack.typeface), pack.typeface) {
+        value = HeroMeshes.of(pack.typeface)
+    }
+    val hero = remember(engine, heroMeshes) { heroMeshes?.let { HeroGeometry(engine, it) } }
+    val atlas = remember(pack.typeface) { GlyphAtlas.of(pack.typeface) }
+    val glyphs = remember(engine, atlas) { GlyphGeometries(engine, atlas) }
+    DisposableEffect(glyphs) { onDispose { glyphs.destroy() } }
     val board = remember(atlas) { LineBoard(SentenceScript.LINE_COUNT) }
     val script = remember(profile.name, profile.location, profile.languages) { SentenceScript.build(profile) }
     var lineUnits by remember(atlas) { mutableStateOf(FloatArray(SentenceScript.LINE_COUNT)) }
+    var badges by remember { mutableStateOf(emptyMap<String, Bitmap>()) }
 
+    val context = LocalContext.current.applicationContext
     LaunchedEffect(atlas, board, script, pack.glyphAlphabet) {
         board.reset()
         atlas.warmUp(SentenceScript.charactersFor(profile) + pack.glyphAlphabet.toList())
-        lineUnits = lineUnitsFor(atlas, profile)
+        val loaded = LogoBadges.load(context, profile.languages)
+        badges = loaded
+        lineUnits = lineUnitsFor(atlas, profile, reserveBadge = loaded.isNotEmpty())
         SentenceScript.play(script, board, pack.glyphAlphabet)
     }
 
     val sparks = remember { Spark.swarm(count = 18, seed = 7) }
-    var firstFrameReported by remember { mutableStateOf(false) }
+    val heroReady = rememberUpdatedState(hero != null)
+    val currentOnReady = rememberUpdatedState(onReady)
+    val currentOnTap = rememberUpdatedState(onTap)
+    val currentPulse = rememberUpdatedState(pulse)
+    var readyReported by remember { mutableStateOf(false) }
 
     SceneView(
         modifier = modifier,
@@ -159,17 +193,18 @@ fun ProfileScene(
         fillLightNode = fillLight,
         cameraNode = cameraNode,
         cameraManipulator = cameraManipulator,
-        onGestureListener = rememberOnGestureListener(onSingleTapConfirmed = { _, _ -> onTap() }),
+        onGestureListener = rememberOnGestureListener(onSingleTapConfirmed = { _, _ -> currentOnTap.value() }),
         onFrame = {
-            if (!firstFrameReported) {
-                firstFrameReported = true
-                onFirstFrame()
+            if (!readyReported && heroReady.value) {
+                readyReported = true
+                currentOnReady.value()
             }
         },
     ) {
         TypographicBlock(
-            hello = hello, world = world, chrome = chrome, accentMetal = accentMetal, label = label,
-            cursor = cursor, atlas = atlas, board = board, lineUnits = lineUnits, pulse = pulse,
+            hero = hero, chrome = chrome, accentMetal = accentMetal, label = label, cursor = cursor,
+            glyphs = glyphs, board = board, lineUnits = lineUnits, badges = badges,
+            pulse = { currentPulse.value() },
         )
         HaloRing(halo, spark)
         sparks.forEachIndexed { index, s -> key(index) { OrbitingSpark(s, spark) } }
@@ -181,65 +216,126 @@ fun ProfileScene(
     }
 }
 
-/** Per-line scale so the longest text each line can show fits [LINE_WIDTH] at most [LINE_CAP_HEIGHT] tall. */
-private fun lineUnitsFor(atlas: GlyphAtlas, profile: Profile): FloatArray {
+/**
+ * Per-line scale so the longest text each line can show fits [LINE_WIDTH] at most [LINE_CAP_HEIGHT]
+ * tall. With [reserveBadge] the languages line leaves room for the logo that trails it.
+ */
+private fun lineUnitsFor(atlas: GlyphAtlas, profile: Profile, reserveBadge: Boolean): FloatArray {
     val base = LINE_CAP_HEIGHT / atlas.capHeight
     val name = SentenceScript.NAME_LABEL + profile.name.trim().ifBlank { SentenceScript.FALLBACK_NAME }
     val languages = profile.languages.map { SentenceScript.LANGUAGES_LABEL + it.trim() }.ifEmpty { listOf("") }
     val location = SentenceScript.LOCATION_LABEL + profile.location.trim()
-    fun fit(texts: List<String>): Float {
+    fun fit(texts: List<String>, available: Float = LINE_WIDTH): Float {
         val widest = texts.maxOf { atlas.lineWidth(it) }
-        return if (widest <= 0f) base else min(base, LINE_WIDTH / widest)
+        return if (widest <= 0f) base else min(base, available / widest)
     }
-    return floatArrayOf(fit(listOf(name)), fit(languages), fit(listOf(location)))
+    val languagesWidth = if (reserveBadge) LINE_WIDTH - BADGE_GAP - BADGE_SIZE else LINE_WIDTH
+    return floatArrayOf(fit(listOf(name)), fit(languages, languagesWidth), fit(listOf(location)))
+}
+
+/** CPU meshes of the two hero words for one typeface, built once per process off the main thread. */
+private class HeroMeshes(val hello: ExtrudedText.Mesh, val world: ExtrudedText.Mesh) {
+    companion object {
+        private val shared = ConcurrentHashMap<GlyphTypeface, HeroMeshes>()
+
+        fun cached(typeface: GlyphTypeface): HeroMeshes? = shared[typeface]
+
+        suspend fun of(typeface: GlyphTypeface): HeroMeshes = shared[typeface] ?: withContext(Dispatchers.Default) {
+            val face = typeface.toTypeface()
+            val built = HeroMeshes(
+                hello = ExtrudedText.build(ExtrudedText.Spec("HELLO", face)),
+                world = ExtrudedText.build(ExtrudedText.Spec("WORLD", face)),
+            )
+            shared.putIfAbsent(typeface, built) ?: built
+        }
+    }
+}
+
+/** The hero words uploaded to one engine. The geometries are freed with the nodes that draw them. */
+private class HeroGeometry(engine: Engine, val meshes: HeroMeshes) {
+    val hello: Geometry = ExtrudedText.upload(engine, meshes.hello)
+    val world: Geometry = ExtrudedText.upload(engine, meshes.world)
 }
 
 // ── Scene pieces ──────────────────────────────────────────────────────────────────────────────────
 
 @Composable
 private fun SceneScope.TypographicBlock(
-    hello: Pair<Geometry, ExtrudedText.Mesh>,
-    world: Pair<Geometry, ExtrudedText.Mesh>,
+    hero: HeroGeometry?,
     chrome: MaterialInstance,
     accentMetal: MaterialInstance,
     label: MaterialInstance,
     cursor: MaterialInstance,
-    atlas: GlyphAtlas,
+    glyphs: GlyphGeometries,
     board: LineBoard,
     lineUnits: FloatArray,
-    pulse: Float,
+    badges: Map<String, Bitmap>,
+    pulse: () -> Float,
 ) {
-    val heroUnit = HERO_WIDTH / max(hello.second.width, world.second.width)
-    val heroGap = max(hello.second.height, world.second.height) * heroUnit * 0.72f
-
     // The whole block shares one slow sway so the sentence and the hero read as a single object.
+    // The tap pulse is applied here, in the render loop, instead of through recomposition.
     Node(
-        scale = Scale(pulse),
         apply = {
             val clock = FrameClock()
+            var appliedPulse = 1f
             onFrame = { nanos ->
                 val t = clock.seconds(nanos)
                 rotation = Rotation(x = 2.5f * sin(t * 0.55f + 1.2f), y = 9f * sin(t * 0.31f), z = 0f)
                 position = Position(0f, 0.04f * sin(t * 0.9f), 0f)
+                val target = pulse()
+                if (target != appliedPulse) {
+                    appliedPulse = target
+                    scale = Scale(target)
+                }
             }
         },
     ) {
-        ExtrudedTextNode(hello.first, chrome, position = Position(y = HERO_Y + heroGap), scale = Scale(heroUnit))
-        ExtrudedTextNode(world.first, accentMetal, position = Position(y = HERO_Y - heroGap), scale = Scale(heroUnit))
+        if (hero != null) {
+            val heroUnit = HERO_WIDTH / max(hero.meshes.hello.width, hero.meshes.world.width)
+            val heroGap = max(hero.meshes.hello.height, hero.meshes.world.height) * heroUnit * 0.72f
+            ExtrudedTextNode(hero.hello, chrome, position = Position(y = HERO_Y + heroGap), scale = Scale(heroUnit))
+            ExtrudedTextNode(hero.world, accentMetal, position = Position(y = HERO_Y - heroGap), scale = Scale(heroUnit))
+        }
+
+        // The language on screen, and its logo if it has one. The logo trails the name, so the line
+        // shifts left by half of what the logo occupies to keep the pair centred.
+        val atlas = glyphs.atlas
+        val languagesText = board.lines[SentenceScript.LINE_LANGUAGES].text
+        val badge = badges[languagesText.removePrefix(SentenceScript.LANGUAGES_LABEL)]
+        val trailing = if (badge != null) BADGE_GAP + BADGE_SIZE else 0f
 
         board.lines.forEachIndexed { index, line ->
             val unit = lineUnits.getOrNull(index)?.takeIf { it > 0f } ?: return@forEachIndexed
             key(index) {
                 TextLine3D(
                     state = line,
-                    atlas = atlas,
+                    glyphs = glyphs,
                     plainMaterial = label,
                     emphasisMaterial = accentMetal,
                     cursorMaterial = cursor,
                     unitScale = unit,
-                    position = Position(y = LINE_BASELINES[index]),
+                    position = Position(
+                        x = if (index == SentenceScript.LINE_LANGUAGES) -trailing / 2f else 0f,
+                        y = LINE_BASELINES[index],
+                    ),
                 )
             }
+        }
+
+        val seed = remember(badges) { badges.values.firstOrNull() }
+        val unit = lineUnits.getOrNull(SentenceScript.LINE_LANGUAGES) ?: 0f
+        if (seed != null && unit > 0f) {
+            val textWidth = remember(atlas, languagesText, unit) { atlas.lineWidth(languagesText) * unit }
+            LanguageBadge(
+                seed = seed,
+                bitmap = badge,
+                size = BADGE_SIZE,
+                position = Position(
+                    x = textWidth / 2f + BADGE_GAP / 2f,
+                    y = LINE_BASELINES[SentenceScript.LINE_LANGUAGES] + atlas.capHeight * unit / 2f,
+                    z = 0f,
+                ),
+            )
         }
     }
 }

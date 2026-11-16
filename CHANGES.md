@@ -1,5 +1,26 @@
 # Changes
 
+## 1.2.0 — 2026-11-16
+
+Language logos and a performance pass.
+
+- Official language logos: the logo of the language on screen pops in beside its name in the 3D
+  scene, and the Settings chips show each language's logo. Full-colour artwork from devicon for
+  the 22 curated languages that have one plus 17 common custom entries (Perl, R, Julia, HTML, CSS,
+  WebAssembly, …), matched case-insensitively and through aliases such as "golang", "cpp", "js".
+  SQL and Assembly have no official logo and are shown without one.
+- Glyph geometry is shared: one GPU buffer pair per character, re-pointed during scrambles
+  instead of re-uploading a mesh per glyph every 60 ms.
+- Sentence glyphs use a coarser curve step (several times fewer vertices and faster tessellation);
+  glyph and hero meshes are cached per typeface for the life of the process and the hero words are
+  tessellated off the main thread.
+- The tap pulse and theme colour fades no longer recompose the scene every frame; they are
+  applied from the render loop and a snapshot flow.
+- Backdrop: gradient shaders are cached instead of rebuilt per frame, the glow and the rain draw
+  into their own layers, the rain redraws only when a row changes and allocates nothing per glyph.
+- The live dot and warm-up spinner animate as layer properties rather than by recomposition.
+- Unit tests for the logo mapping (`LanguageLogosTest`).
+
 ## 1.1.0 — 2026-11-14
 
 Developer profile.

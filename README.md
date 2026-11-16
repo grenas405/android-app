@@ -1,7 +1,7 @@
 # Hello World 3D
 
 An animated developer profile for Android, rendered in real time by **Google Filament** through the
-**SceneView** Compose DSL. Nothing on screen is a texture or a billboard: the app pulls glyph outlines
+**SceneView** Compose DSL. The type is real geometry, not textures or billboards: the app pulls glyph outlines
 from the system font, extrudes them into watertight 3D meshes and shades them as physically based
 metal, lit by an HDR environment with bloom. The scene types out
 
@@ -15,6 +15,8 @@ with a typewriter cursor and matrix-style glyph scrambles, over a themed matrix-
   letter. The personal parts (name, language, location) render in the accent metal.
 - Languages cycle with a matrix scramble: each glyph flickers through the theme's alphabet and
   settles left to right.
+- The official logo of the language on screen pops in beside its name, and the Settings chips carry
+  the same logos.
 - A breathing idle sway on the whole typographic block, an emissive halo ring, orbiting sparks and a
   contact shadow.
 - Matrix rain behind the viewport, drawn with the theme's alphabet (katakana, binary, hex, markup, JSON).
@@ -43,11 +45,13 @@ app/src/main/kotlin/dev/grenas/hello3d/
 ├── data/
 │   ├── Profile.kt                  Profile model, RenderPreset and RainIntensity enums
 │   ├── Languages.kt                Curated language list and normalisation
+│   ├── LanguageLogos.kt            Language name (and aliases) → official logo drawable
 │   ├── ProfileRepository.kt        Preferences DataStore persistence
 │   └── ProfileViewModel.kt         StateFlow<Profile?> plus intent-named edits
 ├── scene/
 │   ├── ExtrudedText.kt             Glyph outline → extruded mesh (caps, holes, walls, advances)
-│   ├── GlyphAtlas.kt               Per-character mesh cache for 3D text layout
+│   ├── GlyphAtlas.kt               Per-character mesh cache and shared GPU glyph geometry
+│   ├── LogoBadge.kt                Language logo badges and the textured quad that shows them
 │   ├── TextLine3D.kt               One 3D text line: glyph nodes, pop-in, in-place scramble, cursor
 │   ├── SentenceScript.kt           Pure-Kotlin choreography: typewriter, scramble, language loop
 │   └── ProfileScene.kt             Filament scene: themed materials, lights, camera, nodes, animation
@@ -58,7 +62,9 @@ app/src/main/kotlin/dev/grenas/hello3d/
     ├── MatrixRain.kt               Canvas glyph rain driven by the theme alphabet
     ├── components/Glass.kt         Shared frosted panels and pills
     └── theme/                      ThemePacks.kt (five packs) and Theme.kt (Material 3 mapping)
+app/src/main/res/drawable-nodpi/logo_*.webp           Language logos (256 px, lossless)
 app/src/test/kotlin/.../scene/SentenceScriptTest.kt   Unit tests for the choreography
+app/src/test/kotlin/.../data/LanguageLogosTest.kt     Unit tests for the logo mapping
 ```
 
 ### How the 3D text is built
@@ -69,9 +75,19 @@ by containment depth, triangulates the caps with SceneView's ear-clipping triang
 hard-edged side walls. The result is uploaded once as a Filament `VertexBuffer`/`IndexBuffer`
 through SceneView's `Geometry.Builder` and rendered with a `GeometryNode`. The hero words are one
 mesh each. The sentence lines use `GlyphAtlas`, which caches one baseline-anchored mesh per
-character and lays glyphs out by pen advance. Every visible glyph is its own `GeometryNode`; a
-scramble swaps the node's mesh in place, so the typewriter and matrix effects never rebuild the
-scene graph.
+character and lays glyphs out by pen advance. Every visible glyph is its own node, but all nodes
+showing the same character share one vertex/index buffer pair (`GlyphGeometries`); a scramble
+re-points a node at another character's buffers, so the typewriter and matrix effects neither
+rebuild the scene graph nor upload meshes.
+
+### Language logos
+
+`LanguageLogos` maps a language name to a bundled logo. The artwork is the full-colour set from
+[devicon](https://github.com/devicons/devicon) (MIT), rasterised to 256 px lossless WebP. In the
+scene, `LogoBadges` draws each logo unmodified on a light rounded plate (several marks are black and
+would vanish on the dark themes) and `LanguageBadge` shows it on one textured quad that trails the
+language name. SQL and Assembly have no official logo. The logos are trademarks of their respective
+owners and are used only to identify the languages.
 
 ### How the sentence is choreographed
 

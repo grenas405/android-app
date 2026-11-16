@@ -74,14 +74,12 @@ object ExtrudedText {
         letterSpacing = spec.letterSpacing
     }
 
-    fun buildGeometry(engine: Engine, spec: Spec): Pair<Geometry, Mesh> {
-        val mesh = build(spec)
-        val geometry = Geometry.Builder()
+    /** Uploads a mesh from [build] to the GPU. Main-thread only, like every Filament call. */
+    fun upload(engine: Engine, mesh: Mesh): Geometry =
+        Geometry.Builder()
             .vertices(mesh.vertices)
             .indices(mesh.indices)
             .build(engine)
-        return geometry to mesh
-    }
 
     fun build(spec: Spec): Mesh {
         val paint = paintFor(spec)
